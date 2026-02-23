@@ -1,11 +1,6 @@
 use std::sync::Arc;
 
 use hyper_util::client::legacy::connect::HttpConnector;
-#[cfg(any(
-    feature = "rustls-native-certs",
-    feature = "rustls-platform-verifier",
-    feature = "webpki-roots"
-))]
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
@@ -17,6 +12,20 @@ use super::{DefaultServerNameResolver, HttpsConnector, ResolveServerName};
     feature = "rustls-platform-verifier"
 ))]
 use crate::config::ConfigBuilderExt;
+
+/// Returns the default crypto provider based on enabled features.
+///
+/// Prefers `aws-lc-rs` when both `aws-lc-rs` and `ring` are enabled.
+#[cfg(any(feature = "ring", feature = "aws-lc-rs"))]
+fn default_provider() -> Arc<CryptoProvider> {
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "aws-lc-rs")] {
+            Arc::new(rustls_aws_lc_rs::DEFAULT_PROVIDER)
+        } else if #[cfg(feature = "ring")] {
+            Arc::new(rustls_ring::DEFAULT_PROVIDER)
+        }
+    }
+}
 
 /// A builder for an [`HttpsConnector`]
 ///
@@ -30,7 +39,6 @@ use crate::config::ConfigBuilderExt;
 ///
 /// # #[cfg(all(feature = "webpki-roots", feature = "http1", feature="aws-lc-rs"))]
 /// # {
-/// # let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 ///     let https = HttpsConnectorBuilder::new()
 ///     .with_webpki_roots()
 ///     .https_only()
@@ -65,8 +73,7 @@ impl ConnectorBuilder<WantsTlsConfig> {
         ConnectorBuilder(WantsSchemes { tls_config: config })
     }
 
-    /// Shorthand for using rustls' default crypto provider and other defaults, and
-    /// the platform verifier.
+    /// Shorthand for using the default crypto provider and the platform verifier.
     ///
     /// See [`ConfigBuilderExt::with_platform_verifier()`].
     #[cfg(all(
@@ -78,8 +85,7 @@ impl ConnectorBuilder<WantsTlsConfig> {
             .expect("failure to initialize platform verifier")
     }
 
-    /// Shorthand for using rustls' default crypto provider and other defaults, and
-    /// the platform verifier.
+    /// Shorthand for using the default crypto provider and the platform verifier.
     ///
     /// See [`ConfigBuilderExt::with_platform_verifier()`].
     #[cfg(all(
@@ -90,9 +96,9 @@ impl ConnectorBuilder<WantsTlsConfig> {
         self,
     ) -> Result<ConnectorBuilder<WantsSchemes>, rustls::Error> {
         Ok(self.with_tls_config(
-            ClientConfig::builder()
+            ClientConfig::builder(default_provider())
                 .try_with_platform_verifier()?
-                .with_no_client_auth(),
+                .with_no_client_auth()?,
         ))
     }
 
@@ -103,18 +109,15 @@ impl ConnectorBuilder<WantsTlsConfig> {
     pub fn with_provider_and_platform_verifier(
         self,
         provider: impl Into<Arc<CryptoProvider>>,
-    ) -> std::io::Result<ConnectorBuilder<WantsSchemes>> {
+    ) -> Result<ConnectorBuilder<WantsSchemes>, rustls::Error> {
         Ok(self.with_tls_config(
-            ClientConfig::builder_with_provider(provider.into())
-                .with_safe_default_protocol_versions()
-                .and_then(|builder| builder.try_with_platform_verifier())
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-                .with_no_client_auth(),
+            ClientConfig::builder(provider.into())
+                .try_with_platform_verifier()?
+                .with_no_client_auth()?,
         ))
     }
 
-    /// Shorthand for using rustls' default crypto provider and safe defaults, with
-    /// native roots.
+    /// Shorthand for using the default crypto provider with native roots.
     ///
     /// See [`ConfigBuilderExt::with_native_roots`]
     #[cfg(all(
@@ -123,9 +126,10 @@ impl ConnectorBuilder<WantsTlsConfig> {
     ))]
     pub fn with_native_roots(self) -> std::io::Result<ConnectorBuilder<WantsSchemes>> {
         Ok(self.with_tls_config(
-            ClientConfig::builder()
+            ClientConfig::builder(default_provider())
                 .with_native_roots()?
-                .with_no_client_auth(),
+                .with_no_client_auth()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
         ))
     }
 
@@ -138,29 +142,27 @@ impl ConnectorBuilder<WantsTlsConfig> {
         provider: impl Into<Arc<CryptoProvider>>,
     ) -> std::io::Result<ConnectorBuilder<WantsSchemes>> {
         Ok(self.with_tls_config(
-            ClientConfig::builder_with_provider(provider.into())
-                .with_safe_default_protocol_versions()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+            ClientConfig::builder(provider.into())
                 .with_native_roots()?
-                .with_no_client_auth(),
+                .with_no_client_auth()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
         ))
     }
 
-    /// Shorthand for using rustls' default crypto provider and its
-    /// safe defaults.
+    /// Shorthand for using the default crypto provider with webpki roots.
     ///
     /// See [`ConfigBuilderExt::with_webpki_roots`]
     #[cfg(all(any(feature = "ring", feature = "aws-lc-rs"), feature = "webpki-roots"))]
     pub fn with_webpki_roots(self) -> ConnectorBuilder<WantsSchemes> {
         self.with_tls_config(
-            ClientConfig::builder()
+            ClientConfig::builder(default_provider())
                 .with_webpki_roots()
-                .with_no_client_auth(),
+                .with_no_client_auth()
+                .expect("webpki roots config should not fail"),
         )
     }
 
-    /// Shorthand for using a custom [`CryptoProvider`], Rustls' safe default
-    /// protocol versions and Mozilla roots
+    /// Shorthand for using a custom [`CryptoProvider`] and Mozilla roots
     ///
     /// See [`ConfigBuilderExt::with_webpki_roots`]
     #[cfg(feature = "webpki-roots")]
@@ -169,10 +171,9 @@ impl ConnectorBuilder<WantsTlsConfig> {
         provider: impl Into<Arc<CryptoProvider>>,
     ) -> Result<ConnectorBuilder<WantsSchemes>, rustls::Error> {
         Ok(self.with_tls_config(
-            ClientConfig::builder_with_provider(provider.into())
-                .with_safe_default_protocol_versions()?
+            ClientConfig::builder(provider.into())
                 .with_webpki_roots()
-                .with_no_client_auth(),
+                .with_no_client_auth()?,
         ))
     }
 }
@@ -400,7 +401,6 @@ mod tests {
     #[test]
     #[cfg(all(feature = "webpki-roots", feature = "http1"))]
     fn test_builder() {
-        ensure_global_state();
         let _connector = super::ConnectorBuilder::new()
             .with_webpki_roots()
             .https_only()
@@ -412,11 +412,12 @@ mod tests {
     #[cfg(feature = "http1")]
     #[should_panic(expected = "ALPN protocols should not be pre-defined")]
     fn test_reject_predefined_alpn() {
-        ensure_global_state();
+        let provider = super::default_provider();
         let roots = rustls::RootCertStore::empty();
-        let mut config_with_alpn = rustls::ClientConfig::builder()
+        let mut config_with_alpn = rustls::ClientConfig::builder(provider)
             .with_root_certificates(roots)
-            .with_no_client_auth();
+            .with_no_client_auth()
+            .unwrap();
         config_with_alpn.alpn_protocols = vec![b"fancyprotocol".to_vec()];
         let _connector = super::ConnectorBuilder::new()
             .with_tls_config(config_with_alpn)
@@ -428,20 +429,18 @@ mod tests {
     #[test]
     #[cfg(all(feature = "http1", feature = "http2"))]
     fn test_alpn() {
-        ensure_global_state();
+        let provider = super::default_provider();
         let roots = rustls::RootCertStore::empty();
-        let tls_config = rustls::ClientConfig::builder()
+        let tls_config = rustls::ClientConfig::builder(provider.clone())
             .with_root_certificates(roots)
-            .with_no_client_auth();
+            .with_no_client_auth()
+            .unwrap();
         let connector = super::ConnectorBuilder::new()
             .with_tls_config(tls_config.clone())
             .https_only()
             .enable_http1()
             .build();
-        assert!(connector
-            .tls_config
-            .alpn_protocols
-            .is_empty());
+        assert!(connector.tls_config.alpn_protocols.is_empty());
         let connector = super::ConnectorBuilder::new()
             .with_tls_config(tls_config.clone())
             .https_only()
@@ -472,11 +471,12 @@ mod tests {
     #[test]
     #[cfg(all(not(feature = "http1"), feature = "http2"))]
     fn test_alpn_http2() {
+        let provider = super::default_provider();
         let roots = rustls::RootCertStore::empty();
-        let tls_config = rustls::ClientConfig::builder()
-            .with_safe_defaults()
+        let tls_config = rustls::ClientConfig::builder(provider)
             .with_root_certificates(roots)
-            .with_no_client_auth();
+            .with_no_client_auth()
+            .unwrap();
         let connector = super::ConnectorBuilder::new()
             .with_tls_config(tls_config.clone())
             .https_only()
@@ -489,12 +489,5 @@ mod tests {
             .enable_all_versions()
             .build();
         assert_eq!(&connector.tls_config.alpn_protocols, &[b"h2".to_vec()]);
-    }
-
-    fn ensure_global_state() {
-        #[cfg(feature = "ring")]
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        #[cfg(feature = "aws-lc-rs")]
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     }
 }

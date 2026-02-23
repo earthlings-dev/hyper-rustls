@@ -116,11 +116,7 @@ impl ConfigBuilderExt for ConfigBuilder<ClientConfig, WantsVerifier> {
     #[cfg(feature = "webpki-roots")]
     fn with_webpki_roots(self) -> ConfigBuilder<ClientConfig, WantsClientCert> {
         let mut roots = rustls::RootCertStore::empty();
-        roots.extend(
-            webpki_roots::TLS_SERVER_ROOTS
-                .iter()
-                .cloned(),
-        );
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         self.with_root_certificates(roots)
     }
 }

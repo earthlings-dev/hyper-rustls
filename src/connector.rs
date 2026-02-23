@@ -116,9 +116,7 @@ where
 
         let connecting_future = self.http.call(dst);
         Box::pin(async move {
-            let tcp = connecting_future
-                .await
-                .map_err(Into::into)?;
+            let tcp = connecting_future.await.map_err(Into::into)?;
             Ok(MaybeHttpsStream::Https(TokioIo::new(
                 TlsConnector::from(cfg)
                     .connect(hostname, TokioIo::new(tcp))
@@ -228,6 +226,7 @@ pub trait ResolveServerName {
 ))]
 mod tests {
     use std::future::poll_fn;
+    use std::sync::Arc;
 
     use http::Uri;
     use hyper_util::rt::TokioIo;
@@ -237,25 +236,29 @@ mod tests {
     use super::*;
     use crate::{ConfigBuilderExt, HttpsConnectorBuilder, MaybeHttpsStream};
 
+    fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "aws-lc-rs")] {
+                Arc::new(rustls_aws_lc_rs::DEFAULT_PROVIDER)
+            } else if #[cfg(feature = "ring")] {
+                Arc::new(rustls_ring::DEFAULT_PROVIDER)
+            }
+        }
+    }
+
     #[tokio::test]
     async fn connects_https() {
-        connect(Allow::Any, Scheme::Https)
-            .await
-            .unwrap();
+        connect(Allow::Any, Scheme::Https).await.unwrap();
     }
 
     #[tokio::test]
     async fn connects_http() {
-        connect(Allow::Any, Scheme::Http)
-            .await
-            .unwrap();
+        connect(Allow::Any, Scheme::Http).await.unwrap();
     }
 
     #[tokio::test]
     async fn connects_https_only() {
-        connect(Allow::Https, Scheme::Https)
-            .await
-            .unwrap();
+        connect(Allow::Https, Scheme::Https).await.unwrap();
     }
 
     #[tokio::test]
@@ -272,7 +275,7 @@ mod tests {
         allow: Allow,
         scheme: Scheme,
     ) -> Result<MaybeHttpsStream<TokioIo<TcpStream>>, BoxError> {
-        let config_builder = rustls::ClientConfig::builder();
+        let config_builder = rustls::ClientConfig::builder(provider());
         cfg_if::cfg_if! {
             if #[cfg(feature = "rustls-platform-verifier")] {
                 let config_builder = config_builder.try_with_platform_verifier()?;
@@ -282,7 +285,7 @@ mod tests {
                 let config_builder = config_builder.with_webpki_roots();
             }
         }
-        let config = config_builder.with_no_client_auth();
+        let config = config_builder.with_no_client_auth()?;
 
         let builder = HttpsConnectorBuilder::new().with_tls_config(config);
         let mut service = match allow {

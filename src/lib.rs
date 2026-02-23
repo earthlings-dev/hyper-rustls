@@ -6,14 +6,18 @@
 //! ## Example client
 //!
 //! ```no_run
-//! # #[cfg(all(feature = "rustls-native-certs", feature = "http1"))]
+//! # #[cfg(all(feature = "rustls-native-certs", feature = "http1", feature = "aws-lc-rs"))]
 //! # fn main() {
+//! use std::sync::Arc;
+//!
 //! use http::StatusCode;
 //! use http_body_util::Empty;
 //! use hyper::body::Bytes;
+//! use hyper_rustls::ConfigBuilderExt;
 //! use hyper_util::client::legacy::Client;
 //! use hyper_util::rt::TokioExecutor;
 //!
+//! let provider = Arc::new(rustls_aws_lc_rs::DEFAULT_PROVIDER);
 //! let mut rt = tokio::runtime::Runtime::new().unwrap();
 //! let url = ("https://hyper.rs").parse().unwrap();
 //! let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -28,7 +32,7 @@
 //! let res = rt.block_on(client.get(url)).unwrap();
 //! assert_eq!(res.status(), StatusCode::OK);
 //! # }
-//! # #[cfg(not(all(feature = "rustls-native-certs", feature = "http1")))]
+//! # #[cfg(not(all(feature = "rustls-native-certs", feature = "http1", feature = "aws-lc-rs")))]
 //! # fn main() {}
 //! ```
 

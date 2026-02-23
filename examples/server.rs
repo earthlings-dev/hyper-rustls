@@ -33,14 +33,12 @@ fn error(err: String) -> io::Error {
     io::Error::new(io::ErrorKind::Other, err)
 }
 
+fn default_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls_aws_lc_rs::DEFAULT_PROVIDER)
+}
+
 #[tokio::main]
 async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Set a process wide default crypto provider.
-    #[cfg(feature = "ring")]
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    #[cfg(feature = "aws-lc-rs")]
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
     // First parameter is port number (optional, defaults to 1337)
     let port = match env::args().nth(1) {
         Some(ref p) => p.parse()?,
@@ -62,11 +60,12 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let incoming = TcpListener::bind(&addr).await?;
 
     // Build TLS configuration.
-    let mut server_config = ServerConfig::builder()
+    let mut server_config = ServerConfig::builder(default_provider())
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(|e| error(e.to_string()))?;
-    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+    server_config.alpn_protocols =
+        vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
     let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
 
     let service = service_fn(echo);
@@ -104,12 +103,7 @@ async fn echo(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Er
         }
         // Echo service route.
         (&Method::POST, "/echo") => {
-            *response.body_mut() = Full::from(
-                req.into_body()
-                    .collect()
-                    .await?
-                    .to_bytes(),
-            );
+            *response.body_mut() = Full::from(req.into_body().collect().await?.to_bytes());
         }
         // Catch-all 404.
         _ => {
